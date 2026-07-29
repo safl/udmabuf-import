@@ -3,14 +3,23 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/dma-buf.h>
-#include <linux/udmabuf.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include "module/udmabuf_import.h"
+
 #include <cuda.h>
+
+/* cuCtxCreate gained a create-params argument (cuCtxCreate_v4) in CUDA 12.5;
+ * wrap both signatures so the example builds across toolkit versions. */
+#if CUDA_VERSION >= 12050
+#define CU_CTX_CREATE(pctx, flags, dev) cuCtxCreate((pctx), NULL, (flags), (dev))
+#else
+#define CU_CTX_CREATE(pctx, flags, dev) cuCtxCreate((pctx), (flags), (dev))
+#endif
 
 struct gpu_dmabuf_info {
   CUmemGenericAllocationHandle dmabuf_fd;
@@ -38,7 +47,7 @@ int create_nvidia_dmabuf_fd(struct gpu_dmabuf_info *gdi, size_t buf_size) {
     return err;
   }
 
-  err = cuCtxCreate(&ctx, 0, dev);
+  err = CU_CTX_CREATE(&ctx, 0, dev);
   if (err) {
     printf("cuCtxCreate failed: %d\n", err);
     return err;
@@ -73,14 +82,17 @@ int main(int argc, char *argv[]) {
   struct udmabuf_attach *attach;
   struct udmabuf_get_map *map;
   struct gpu_dmabuf_info gpu_dmabuf_info;
-  int udmabuf_fd, dmabuf_fd, err;
+  int import_fd, dmabuf_fd, err;
   size_t buf_size = 8 * 65536; // 8 GPU pages
   long map_size;
 
-  udmabuf_fd = open("/dev/udmabuf", O_RDWR);
-  if (udmabuf_fd < 0) {
+  /* The GPU dma-buf comes from CUDA, not UDMABUF_CREATE, so stock /dev/udmabuf
+   * is not used here. The out-of-tree module serves the UDMABUF_ATTACH /
+   * GET_MAP import ioctls on its own device. */
+  import_fd = open("/dev/udmabuf_import", O_RDWR);
+  if (import_fd < 0) {
     err = errno;
-    printf("Failed to open udmabuf dev, errno: %d\n", err);
+    printf("Failed to open udmabuf_import dev, errno: %d\n", err);
     return err;
   }
 
@@ -102,7 +114,7 @@ int main(int argc, char *argv[]) {
   memset(attach, 0, sizeof(*attach));
   attach->fd = dmabuf_fd;
 
-  err = ioctl(udmabuf_fd, UDMABUF_ATTACH, attach);
+  err = ioctl(import_fd, UDMABUF_ATTACH, attach);
   if (err) {
     err = errno;
     printf("IOCTL UDMABUF_ATTACH failed, errno: %d\n", err);
@@ -124,7 +136,7 @@ int main(int argc, char *argv[]) {
   map->fd = dmabuf_fd;
   map->count = attach->count;
 
-  err = ioctl(udmabuf_fd, UDMABUF_GET_MAP, map);
+  err = ioctl(import_fd, UDMABUF_GET_MAP, map);
   if (err) {
     err = errno;
     printf("IOCTL UDMABUF_GET_MAP failed, %d\n", err);
@@ -136,7 +148,7 @@ int main(int argc, char *argv[]) {
     printf("len %d: %lld\n", i, map->dma_arr[i].dma_len);
   }
 
-  err = ioctl(udmabuf_fd, UDMABUF_GET_MAP, map);
+  err = ioctl(import_fd, UDMABUF_GET_MAP, map);
   if (err) {
     err = errno;
     printf("IOCTL UDMABUF_GET_MAP failed, errno: %d\n", err);
@@ -145,7 +157,7 @@ int main(int argc, char *argv[]) {
 
   destroy_nvidia_dmabuf_fd(&gpu_dmabuf_info);
 
-  close(udmabuf_fd);
+  close(import_fd);
   free(attach);
   free(map);
 

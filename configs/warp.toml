@@ -1,0 +1,31 @@
+# CIJOE target: warp -- NVIDIA RTX A6000 dev box.
+#
+# Ubuntu 26.04 / kernel 7.0.x. Used to build and validate the out-of-tree
+# udmabuf_import DKMS module against a stock-style kernel with headers present.
+#
+# NOTE: set the real hostname/credentials locally; do NOT commit them. Either
+# edit this file in your working copy (it is fine to leave the placeholder in
+# git) or override the transport with a separate, untracked config passed via a
+# second `-c`, e.g. `cijoe -c configs/warp.toml -c configs/transport.local.toml`.
+
+[cijoe.workflow]
+fail_fast = true
+
+[cijoe.transport.ssh]
+hostname = "CHANGEME"
+username = "root"
+password = "CHANGEME"
+timeout = 10
+banner_timeout = 10
+auth_timeout = 10
+
+# Where the working tree is synced to and built on the target.
+[udmabuf.repository]
+path = "/root/git/udmabuf-import"
+
+# DKMS package coordinates (kept in sync with debian/ and module/dkms.conf).
+[udmabuf.dkms]
+package = "udmabuf-import"
+version = "0.1.0"
+module = "udmabuf_import"
+deb = "udmabuf-import-dkms_0.1.0_all.deb"

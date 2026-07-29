@@ -1,0 +1,30 @@
+doc: |
+  Build and run the userspace examples against the module
+  =======================================================
+
+  Builds the examples on the target and exercises the GPU example against the
+  out-of-tree module's /dev/udmabuf_import. The GPU example gets its dma-buf
+  from CUDA (an NVIDIA GPU is required) and imports it via the module.
+
+  The CPU example is validated separately by tasks/dkms_build.yaml's parity
+  step; it includes <linux/udmabuf.h> for UDMABUF_CREATE, which collides with
+  the import defs on a box already running the in-tree patch, so it is not
+  built here (build it on a stock kernel instead).
+
+  Run with::
+
+    cijoe -c configs/warp.toml tasks/examples.yaml
+
+steps:
+- name: sync
+  uses: sync_worktree
+
+- name: build_gpu
+  run: |
+    make -C {{ config.udmabuf.repository.path }} gpu
+    ls -l {{ config.udmabuf.repository.path }}/udmabuf_import_gpu
+
+- name: run_gpu
+  run: |
+    modprobe udmabuf_import
+    cd {{ config.udmabuf.repository.path }} && ./udmabuf_import_gpu

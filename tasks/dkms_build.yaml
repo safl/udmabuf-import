@@ -1,0 +1,64 @@
+doc: |
+  Build and validate the out-of-tree udmabuf_import DKMS module
+  =============================================================
+
+  Proves the udmabuf dma-buf importer can ship as a standalone out-of-tree
+  DKMS module against a stock kernel, with no kernel rebuild. It syncs the
+  local working tree to the target, builds the module out-of-tree (the
+  decisive modpost link check), loads it, then builds and installs the DKMS
+  .deb and confirms /dev/udmabuf_import appears.
+
+  Run with::
+
+    cijoe -c configs/warp.toml tasks/dkms_build.yaml
+
+  Each 'run:' line executes in a fresh shell, so cd does not persist; use
+  make -C / absolute paths / single-line '&&' chains.
+
+steps:
+- name: sync
+  uses: sync_worktree
+
+- name: dependencies
+  run: |
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -qy update
+    apt-get -qy install build-essential fakeroot debhelper dh-dkms dkms "linux-headers-$(uname -r)"
+
+- name: build_module
+  run: |
+    make -C {{ config.udmabuf.repository.path }}/module clean
+    make -C {{ config.udmabuf.repository.path }}/module
+    test -f {{ config.udmabuf.repository.path }}/module/udmabuf_import.ko && echo "KO_BUILT_OK"
+    modinfo {{ config.udmabuf.repository.path }}/module/udmabuf_import.ko
+
+- name: load_module
+  run: |
+    rmmod udmabuf_import 2>/dev/null || true
+    insmod {{ config.udmabuf.repository.path }}/module/udmabuf_import.ko
+    ls -l /dev/udmabuf_import
+    dmesg | tail -n 8
+    rmmod udmabuf_import
+
+- name: build_deb
+  run: |
+    cd {{ config.udmabuf.repository.path }} && dpkg-buildpackage -us -uc -b
+    ls -l {{ config.udmabuf.repository.path }}/../{{ config.udmabuf.dkms.deb }}
+
+- name: install_deb
+  run: |
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -qy install {{ config.udmabuf.repository.path }}/../{{ config.udmabuf.dkms.deb }}
+    dkms status | grep {{ config.udmabuf.dkms.package }}
+
+- name: verify_device
+  run: |
+    modprobe udmabuf_import
+    ls -l /dev/udmabuf_import
+    lsmod | grep udmabuf_import
+
+- name: parity_test
+  run: |
+    modprobe udmabuf_import
+    gcc -O2 -Wall -o /tmp/udmabuf_import_parity {{ config.udmabuf.repository.path }}/test/udmabuf_import_parity.c
+    /tmp/udmabuf_import_parity

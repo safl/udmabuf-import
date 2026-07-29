@@ -12,6 +12,12 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+/* <linux/udmabuf.h> above supplies UDMABUF_CREATE; the import ioctls come from
+ * the module's header here. On a box already running the in-tree import patch
+ * <linux/udmabuf.h> also defines these, so build there against a stock header
+ * to avoid a redefinition. */
+#include "module/udmabuf_import.h"
+
 struct buf_udmabuf {
   void *ptr;
   size_t size;
@@ -76,14 +82,23 @@ int main(int argc, char *argv[]) {
   struct udmabuf_attach *attach;
   struct udmabuf_get_map *map;
   struct buf_udmabuf dmabuf;
-  int udmabuf_fd, dmabuf_fd, err;
+  int udmabuf_fd, import_fd, dmabuf_fd, err;
   long buf_size = 8 * 4096;
   long map_size;
 
+  /* Stock /dev/udmabuf serves UDMABUF_CREATE. */
   udmabuf_fd = open("/dev/udmabuf", O_RDWR);
   if (udmabuf_fd < 0) {
     err = errno;
     printf("Failed to open udmabuf dev, errno: %d\n", err);
+    return err;
+  }
+
+  /* The out-of-tree module serves UDMABUF_ATTACH / GET_MAP / DETACH. */
+  import_fd = open("/dev/udmabuf_import", O_RDWR);
+  if (import_fd < 0) {
+    err = errno;
+    printf("Failed to open udmabuf_import dev, errno: %d\n", err);
     return err;
   }
 
@@ -105,7 +120,7 @@ int main(int argc, char *argv[]) {
   memset(attach, 0, sizeof(*attach));
   attach->fd = dmabuf_fd;
 
-  err = ioctl(udmabuf_fd, UDMABUF_ATTACH, attach);
+  err = ioctl(import_fd, UDMABUF_ATTACH, attach);
   if (err) {
     err = errno;
     printf("IOCTL UDMABUF_ATTACH failed, errno: %d\n", err);
@@ -127,7 +142,7 @@ int main(int argc, char *argv[]) {
   map->fd = dmabuf_fd;
   map->count = attach->count;
 
-  err = ioctl(udmabuf_fd, UDMABUF_GET_MAP, map);
+  err = ioctl(import_fd, UDMABUF_GET_MAP, map);
   if (err) {
     err = errno;
     printf("IOCTL UDMABUF_GET_MAP failed, errno: %d\n", err);
@@ -139,13 +154,14 @@ int main(int argc, char *argv[]) {
     printf("len %d: %lld\n", i, map->dma_arr[i].dma_len);
   }
 
-  err = ioctl(udmabuf_fd, UDMABUF_DETACH, &dmabuf_fd);
+  err = ioctl(import_fd, UDMABUF_DETACH, &dmabuf_fd);
   if (err) {
     err = errno;
     printf("IOCTL UDMABUF_DETACH failed, errno: %d\n", err);
     return err;
   }
 
+  close(import_fd);
   close(udmabuf_fd);
   free(attach);
   free(map);

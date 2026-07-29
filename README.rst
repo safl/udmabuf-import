@@ -1,28 +1,53 @@
 UDMABUF Import
 ==============
 
-This repository contains a patch adding *dma-buf* importer functionality to
-*udmabuf* and two examples of using it to import a *dma-buf* and share its
-physical addresses with userspace. One is using *udmabuf* to create a *dma-buf*
-from a *memfd*, the other is using the NVIDIA driver to create a *dma-buf* from
-memory allocated on the GPU.
+A *dma-buf* importer for *udmabuf*: it imports an external *dma-buf* and shares
+its DMA/physical addresses with userspace over three ioctls (``UDMABUF_ATTACH``,
+``UDMABUF_DETACH``, ``UDMABUF_GET_MAP``). Two examples import a *dma-buf* and
+print its addresses: ``udmabuf_import_cpu`` (a *memfd* via *udmabuf*) and
+``udmabuf_import_gpu`` (GPU memory via the NVIDIA driver).
 
-Compile and Run
----------------
+The importer ships two ways. Preferred is the out-of-tree **DKMS module**
+(``module/``): it serves the import ioctls on its own ``/dev/udmabuf_import``
+device and installs on a stock kernel, no rebuild. The original in-tree
+**patch** (``patches/``) instead adds the ioctls to the built-in ``udmabuf`` and
+needs a custom kernel (see the alternative below).
 
-* ``make cpu`` builds the CPU example, ``./udmabuf_import_cpu`` runs it
+Install the DKMS module
+-----------------------
 
-* ``make gpu`` builds the GPU example, ``./udmabuf_import_gpu`` runs it
+Stock ``/dev/udmabuf`` keeps serving ``UDMABUF_CREATE``; the module adds
+``/dev/udmabuf_import`` for ``UDMABUF_ATTACH`` / ``DETACH`` / ``GET_MAP``.
 
-Prerequisites
--------------
+* Install the ``.deb`` (CI builds it for Ubuntu 24.04 and 26.04)::
 
-A custom kernel is required for running these examples.
-The instructions for installing the kernel can be found below.
-This assumes Ubuntu 24.04, which comes with kernel 6.8.
+	  apt install ./udmabuf-import-dkms_*.deb
 
-Install Custom Kernel
-^^^^^^^^^^^^^^^^^^^^^
+* Or build the ``.deb`` from this repo::
+
+	  apt install build-essential debhelper dh-dkms
+	  dpkg-buildpackage -us -uc -b
+
+DKMS rebuilds the module automatically on kernel updates. Load it now with
+``modprobe udmabuf_import`` (installing the ``.deb`` does not auto-load it). To
+load it on every boot, create a ``.conf`` under ``/etc/modules-load.d/`` that
+names the module, which ``systemd-modules-load`` reads at boot::
+
+	  echo udmabuf_import > /etc/modules-load.d/udmabuf_import.conf
+
+Build and run the examples
+--------------------------
+
+* ``make cpu`` builds ``udmabuf_import_cpu`` (*udmabuf* + *memfd*)
+* ``make gpu`` builds ``udmabuf_import_gpu`` (needs CUDA; links ``-lcuda``)
+
+*dma-buf* is fd-backed, so raise the limit first: ``ulimit -n 1000000``.
+
+Alternative: in-tree patch (custom kernel)
+------------------------------------------
+
+Only needed to get the ioctls on ``/dev/udmabuf`` itself. Assumes Ubuntu 24.04
+(kernel 6.8).
 
 * Get kernel source::
 
