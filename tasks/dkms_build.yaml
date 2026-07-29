@@ -48,6 +48,11 @@ steps:
 - name: install_deb
   run: |
     export DEBIAN_FRONTEND=noninteractive
+    # Purge first so re-running with an unchanged version still forces DKMS to
+    # rebuild the module from the freshly-synced source, rather than apt seeing
+    # 0.1.0 already installed and skipping.
+    rmmod udmabuf_import 2>/dev/null || true
+    apt-get -qy purge {{ config.udmabuf.dkms.package }}-dkms 2>/dev/null || true
     apt-get -qy install {{ config.udmabuf.repository.path }}/../{{ config.udmabuf.dkms.deb }}
     dkms status | grep {{ config.udmabuf.dkms.package }}
 
@@ -62,3 +67,9 @@ steps:
     modprobe udmabuf_import
     gcc -O2 -Wall -o /tmp/udmabuf_import_parity {{ config.udmabuf.repository.path }}/test/udmabuf_import_parity.c
     /tmp/udmabuf_import_parity
+
+- name: bounds_test
+  run: |
+    modprobe udmabuf_import
+    gcc -O2 -Wall -o /tmp/udmabuf_import_bounds {{ config.udmabuf.repository.path }}/test/udmabuf_import_bounds.c
+    /tmp/udmabuf_import_bounds
