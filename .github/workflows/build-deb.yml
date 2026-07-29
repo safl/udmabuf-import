@@ -1,0 +1,176 @@
+name: build-deb
+
+# Build the udmabuf-import DKMS .deb for the supported Ubuntu releases.
+#
+# The package is Architecture: all and dh_dkms does not compile the module at
+# package-build time (DKMS builds it on the target at install), so no kernel
+# headers or matching runner kernel are needed. Each release builds inside its
+# own container image, which avoids depending on a hosted runner label for a
+# freshly released Ubuntu.
+#
+# Version: the deb is stamped from git. A build on tag vX.Y.Z is X.Y.Z; any
+# other build is <last-tag>+<commits>.g<sha> (or <changelog-base>+<commits>.g<sha>
+# with no tags yet). debian/rules derives the module version and /usr/src tree
+# from the changelog, so the stamp flows everywhere consistently.
+
+on:
+  push:
+    branches: [main, module-out-of-tree]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["24.04", "26.04"]
+    container:
+      image: ubuntu:${{ matrix.release }}
+    steps:
+      - name: Install packaging toolchain
+        run: |
+          apt-get update
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get install -y --no-install-recommends \
+            build-essential debhelper fakeroot dpkg-dev git ca-certificates
+          # The debhelper dkms addon is a separate package (dh-dkms) on recent
+          # releases and bundled in dkms on older ones; accept either.
+          apt-get install -y dh-dkms || apt-get install -y dkms
+          git config --global --add safe.directory '*'
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Compute and stamp version
+        run: |
+          base=$(dpkg-parsechangelog -SVersion | sed 's/[+~-].*//')
+          if desc=$(git describe --tags --match 'v[0-9]*' 2>/dev/null); then
+            ver=$(printf '%s' "${desc#v}" | sed 's/-\([0-9]\+\)-g/+\1.g/')
+          else
+            ver="${base}+$(git rev-list --count HEAD).g$(git rev-parse --short HEAD)"
+          fi
+          echo "Stamping version: $ver"
+          sed -i "1s/^udmabuf-import ([^)]*)/udmabuf-import ($ver)/" debian/changelog
+          head -1 debian/changelog
+          echo "DEB_VERSION=$ver" >> "$GITHUB_ENV"
+
+      - name: Build the DKMS .deb
+        run: dpkg-buildpackage -us -uc -b
+
+      - name: Stage and inspect artifact
+        run: |
+          mkdir -p dist
+          mv ../udmabuf-import-dkms_*_all.deb dist/
+          ls -l dist
+          dpkg-deb -I dist/*.deb
+          dpkg-deb -c dist/*.deb
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v7
+        with:
+          name: udmabuf-import-dkms_${{ env.DEB_VERSION }}_ubuntu-${{ matrix.release }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  # Compile the module out-of-tree against packaged kernel headers (build + the
+  # modpost link check) for each release's generic kernel. DKMS does this at
+  # install time; running it in CI catches build/link regressions without
+  # hardware.
+  module:
+    name: Compile module
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["24.04", "26.04"]
+    container:
+      image: ubuntu:${{ matrix.release }}
+    steps:
+      - name: Install kernel headers and toolchain
+        run: |
+          apt-get update
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get install -y --no-install-recommends \
+            build-essential kmod linux-headers-generic
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build the module (out-of-tree link check)
+        run: |
+          hdr=$(ls -d /usr/src/linux-headers-*-generic | head -1)
+          echo "Building against: $hdr"
+          make -C module KDIR="$hdr"
+          test -f module/udmabuf_import.ko
+          modinfo module/udmabuf_import.ko | grep -E 'name|vermagic|import_ns|depends'
+
+  # Load the freshly-built module end-to-end: build against the runner's own
+  # running kernel, insmod, check the device appears, rmmod. This needs a VM
+  # runner (not a container) and headers matching the running kernel, so it is
+  # separate from the container-based compile job above.
+  load:
+    name: Load module
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install headers for the running kernel
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential kmod "linux-headers-$(uname -r)"
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build against the running kernel
+        run: make -C module KDIR="/lib/modules/$(uname -r)/build"
+
+      - name: Insert, verify device, remove
+        run: |
+          sudo insmod module/udmabuf_import.ko
+          ls -l /dev/udmabuf_import
+          lsmod | grep udmabuf_import
+          sudo rmmod udmabuf_import
+          echo "load/unload OK"
+
+  # Publish a GitHub Release when a v* tag is pushed. Works on a fork: the
+  # fork's GITHUB_TOKEN can create releases on the fork. The package is
+  # Architecture: all and identical across build hosts, so a single canonical
+  # deb is attached; the matrix above still verifies it packages on both.
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built debs
+        uses: actions/download-artifact@v7
+        with:
+          path: dist
+
+      - name: Select the canonical deb
+        run: |
+          shopt -s nullglob globstar
+          mkdir -p release
+          deb=$(ls dist/**/udmabuf-import-dkms_*_all.deb | head -1)
+          test -n "$deb" || { echo "no deb found in artifacts"; exit 1; }
+          cp "$deb" release/
+          ls -l release
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" release/*.deb --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$tag" release/*.deb \
+              --repo "$GITHUB_REPOSITORY" --title "$tag" --generate-notes
+          fi
